@@ -1,0 +1,3748 @@
+# How a Frontier AI System Actually Works  
+## From bytes and text → tokens → neural network → training → reasoning → tools → agents → ChatGPT / Claude / Gemini
+
+The best way to learn this is **not** to start with “Transformers are attention mechanisms.” That skips too many layers.
+
+We will instead build the whole system from the ground up.
+
+The central idea is:
+
+> **A frontier AI system is a very large learned computational engine surrounded by a large amount of ordinary software and infrastructure.**
+
+The neural network is the core. It is not the entire product.
+
+As of October 2026, the public frontier includes systems such as **GPT-5.6**, **Claude Opus 5.5 / Sonnet 5.5**, and Google's **Gemini 3.x** family. Their exact internal architectures, parameter counts, training mixtures, and optimizer recipes are not fully public. What follows therefore separates the **known general mechanism** from **proprietary frontier implementation details**. [OpenAI](https://openai.com/index/gpt-5-6/?utm_source=chatgpt.com)
+
+---
+
+# Part I — First understand what a computer actually receives
+
+Before an LLM sees:
+
+> The cat sat on the mat.
+
+the computer does not see “English.”
+
+It sees **numbers**.
+
+Everything eventually becomes a numerical representation.
+
+At the lowest level:
+
+```text
+electric signals
+      ↓
+bits
+      ↓
+bytes
+      ↓
+files / data
+```
+
+A byte is just 8 bits.
+
+For example, a text file is ultimately a sequence of bytes.
+
+A character such as:
+
+```text
+A
+```
+
+has a representation under a character encoding such as UTF-8.
+
+So the first important correction is:
+
+> Computers absolutely can represent human language.
+
+They simply do not operate directly on the *meaning* of language.
+
+They operate on encoded data.
+
+---
+
+# Part II — Raw data enters the AI pipeline
+
+Suppose an AI company has these files:
+
+```text
+book.pdf
+wikipedia.html
+paper.txt
+source_code.py
+conversation.json
+image.png
+audio.wav
+```
+
+You cannot simply throw all of those files into a Transformer.
+
+Each type needs processing.
+
+A simplified preprocessing pipeline is:
+
+```text
+raw files
+   ↓
+file parser
+   ↓
+content extraction
+   ↓
+cleaning
+   ↓
+filtering
+   ↓
+deduplication
+   ↓
+training examples
+```
+
+## Example: PDF
+
+Suppose:
+
+```text
+paper.pdf
+```
+
+contains:
+
+> The derivative of x² is 2x.
+
+The training system may first extract:
+
+```text
+The derivative of x² is 2x.
+```
+
+The PDF's layout information, images, fonts, metadata, etc. may be handled separately.
+
+For some multimodal systems, visual information from the PDF can also be retained.
+
+So:
+
+```text
+PDF
+ ↓
+text extraction
+ +
+visual extraction
+ ↓
+training representation
+```
+
+This is already a large engineering system.
+
+---
+
+# Part III — Data cleaning
+
+Raw internet data is extremely messy.
+
+Imagine a web crawl containing:
+
+```text
+Wikipedia article
+duplicate Wikipedia article
+spam page
+SEO page
+copyright-infringing text
+machine-generated garbage
+adult material
+malicious code
+broken HTML
+navigation menus
+cookie notices
+ads
+comments
+```
+
+Training indiscriminately on everything is undesirable.
+
+So a serious training pipeline performs things such as:
+
+```text
+language identification
+quality filtering
+spam filtering
+duplicate removal
+document classification
+malware / unwanted-content filtering
+format cleanup
+privacy-related processing
+```
+
+One important operation is **deduplication**.
+
+Imagine the same article occurs 400,000 times.
+
+Without deduplication, the model may see:
+
+```text
+same article
+same article
+same article
+same article
+...
+```
+
+over and over.
+
+That wastes training compute and can distort the learned distribution.
+
+Anthropic publicly describes cleaning, filtering, classification, and deduplication in the training of Claude Opus 5.5, and OpenAI similarly describes filtering and dataset processing for GPT-5.6. [Anthropic](https://www.anthropic.com/transparency?utm_source=chatgpt.com)
+
+---
+
+# Part IV — The tokenizer
+
+Now suppose our cleaned data contains:
+
+> The cat is sitting on the mat.
+
+The neural network cannot simply receive that sentence as English words.
+
+We therefore need a **tokenizer**.
+
+A tokenizer converts text into pieces called **tokens**.
+
+For example, one tokenizer might produce:
+
+```text
+"The"
+" cat"
+" is"
+" sitting"
+" on"
+" the"
+" mat"
+"."
+```
+
+Another tokenizer could choose a slightly different segmentation.
+
+The important fact is:
+
+> A token is **not necessarily a word**.
+
+A token can be:
+
+```text
+"The"
+" cat"
+"ing"
+"."
+","
+"tion"
+"hello"
+```
+
+or another learned text fragment.
+
+This allows the vocabulary to represent unusual words without requiring every possible word to exist as an independent vocabulary entry.
+
+---
+
+# Part V — Why not simply use words?
+
+Suppose the vocabulary only contained complete English words.
+
+Then what would happen with:
+
+```text
+hyperdimensionality
+```
+
+or
+
+```text
+Grothendieckification
+```
+
+or a typo such as:
+
+```text
+akerrft
+```
+
+You would need special handling.
+
+Subword tokenization solves much of this problem.
+
+A tokenizer might represent an unfamiliar sequence as something like:
+
+```text
+hyper
+dimension
+ality
+```
+
+or perhaps a completely different segmentation.
+
+Thus:
+
+```text
+arbitrary text
+      ↓
+sequence of reusable tokens
+```
+
+is much more practical than:
+
+```text
+one vocabulary entry for every possible word
+```
+
+---
+
+# Part VI — Token IDs
+
+Now the tokenizer assigns every token an integer identifier.
+
+Imagine a tiny vocabulary:
+
+```text
+0  = <end>
+1  = The
+2  = cat
+3  = is
+4  = on
+5  = the
+6  = mat
+7  = .
+```
+
+Then:
+
+```text
+The cat is on the mat.
+```
+
+might become:
+
+```text
+[1, 2, 3, 4, 5, 6, 7]
+```
+
+This is the **token ID sequence**.
+
+Notice something extremely important.
+
+The number
+
+```text
+2
+```
+
+does not mean “cat has numerical value two.”
+
+It simply means:
+
+```text
+token 2 = cat
+```
+
+It is an identifier.
+
+---
+
+# Part VII — Token IDs are still not what the neural network really wants
+
+This is the point where many beginner explanations become misleading.
+
+You might think:
+
+```text
+cat → 2
+dog → 5
+```
+
+and then the network mathematically manipulates the numbers 2 and 5.
+
+It does not work that way.
+
+The token IDs are labels.
+
+The model next performs an **embedding lookup**.
+
+---
+
+# Part VIII — Embeddings
+
+Suppose the model's embedding size is:
+
+```text
+embedding_dim = 4
+```
+
+and the vocabulary is:
+
+```text
+vocab_size = 8
+```
+
+Then the embedding table could conceptually look like:
+
+```text
+token       vector
+
+The         [ 0.2, -0.1,  0.7,  0.4]
+cat         [-0.6,  0.8,  0.1,  0.3]
+is          [ 0.4,  0.2, -0.5,  0.9]
+on          [ 0.1, -0.7,  0.6,  0.2]
+the         [-0.2,  0.5,  0.3, -0.1]
+mat         [ 0.7,  0.1, -0.4,  0.8]
+```
+
+Now:
+
+```text
+cat
+ ↓
+token ID
+ ↓
+embedding lookup
+ ↓
+[-0.6, 0.8, 0.1, 0.3]
+```
+
+The neural network now has a genuine numerical representation.
+
+This is the first really important conceptual transition:
+
+```text
+human language
+      ↓
+tokens
+      ↓
+IDs
+      ↓
+vectors
+```
+
+The vectors are what enter the neural network.
+
+---
+
+# Part IX — What does an embedding actually mean?
+
+Do **not** imagine:
+
+```text
+dimension 1 = grammatical gender
+dimension 2 = animal
+dimension 3 = size
+dimension 4 = color
+```
+
+It usually does not work like a neat dictionary.
+
+Information is distributed throughout the representation.
+
+A word's useful properties may be encoded across many dimensions simultaneously.
+
+So the model learns a large multidimensional representation in which patterns useful for prediction are organized.
+
+The embeddings are **learned**, not manually designed.
+
+---
+
+# Part X — The sequence is now a matrix of numbers
+
+Suppose our sentence has 7 tokens.
+
+Each token has an embedding.
+
+So conceptually we now have:
+
+```text
+The      → vector
+cat      → vector
+is       → vector
+on       → vector
+the      → vector
+mat      → vector
+.        → vector
+```
+
+Stack these together:
+
+```text
+The  → [ ... ]
+cat  → [ ... ]
+is   → [ ... ]
+on   → [ ... ]
+the  → [ ... ]
+mat  → [ ... ]
+.    → [ ... ]
+```
+
+The neural network is now processing a block of numerical data.
+
+This is the basic object that flows through the Transformer.
+
+---
+
+# Part XI — But the model needs to know order
+
+Compare:
+
+```text
+The cat ate the mouse.
+```
+
+with:
+
+```text
+The mouse ate the cat.
+```
+
+The same words appear.
+
+Their order changes the meaning completely.
+
+Therefore the model needs positional information.
+
+Modern Transformers can incorporate position using mechanisms such as rotary positional representations.
+
+The conceptual purpose is simple:
+
+```text
+token identity
++
+where the token occurs
+```
+
+must both influence the representation.
+
+---
+
+# Part XII — Now we reach the Transformer
+
+The Transformer is the central neural architecture used by modern LLMs.
+
+A useful beginner mental model is:
+
+> **The Transformer repeatedly takes the current representations and improves them by allowing the tokens to communicate with one another and then transforming what they learned.**
+
+A typical block contains roughly:
+
+```text
+input
+  ↓
+normalization
+  ↓
+self-attention
+  ↓
+residual addition
+  ↓
+normalization
+  ↓
+feed-forward network
+  ↓
+residual addition
+  ↓
+output
+```
+
+Then another block does essentially the same kind of processing.
+
+And another.
+
+And another.
+
+A small model might use dozens of layers.
+
+A frontier model can be enormously more complicated, and its exact architecture may contain additional mechanisms that are not publicly disclosed.
+
+---
+
+# Part XIII — The single most important idea: attention
+
+Take:
+
+> The dog chased the ball because it was moving.
+
+When the model processes:
+
+```text
+it
+```
+
+it benefits from information elsewhere in the sequence.
+
+Attention provides a mechanism for deciding:
+
+> Which other pieces of the current context should influence this representation?
+
+That is the central intuition.
+
+---
+
+# Part XIV — Queries, keys and values
+
+For each token representation, the network constructs three different versions of the information.
+
+They are called:
+
+```text
+query
+key
+value
+```
+
+Do not overcomplicate the names.
+
+Think of a library.
+
+A token says:
+
+```text
+"What information am I looking for?"
+```
+
+That is the **query**.
+
+Another token says:
+
+```text
+"What kind of information do I represent?"
+```
+
+That is the **key**.
+
+Then it has:
+
+```text
+"What information should I actually give?"
+```
+
+That is the **value**.
+
+The network learns the transformations that create these three representations.
+
+---
+
+# Part XV — Attention with a concrete example
+
+Consider:
+
+```text
+The cat sat on the mat because it was tired.
+```
+
+When processing:
+
+```text
+it
+```
+
+the model can compare the query associated with:
+
+```text
+it
+```
+
+against the keys associated with other tokens.
+
+It may discover that:
+
+```text
+cat
+```
+
+is highly relevant.
+
+Then it gives more attention to the value associated with:
+
+```text
+cat
+```
+
+and less attention to irrelevant tokens.
+
+The result is a new representation for:
+
+```text
+it
+```
+
+that contains information gathered from the rest of the context.
+
+---
+
+# Part XVI — The causal mask
+
+For a GPT-style language model, there is an important restriction.
+
+Suppose the training sentence is:
+
+```text
+The cat is on the mat.
+```
+
+When predicting:
+
+```text
+cat
+```
+
+the model must **not see the future words**:
+
+```text
+is on the mat
+```
+
+otherwise the task would be cheating.
+
+Therefore the model uses **causal attention**.
+
+At a given position, it can use:
+
+```text
+current token
++
+previous tokens
+```
+
+but not future tokens.
+
+Conceptually:
+
+```text
+The        can see: The
+
+cat        can see: The cat
+
+is         can see: The cat is
+
+on         can see: The cat is on
+
+the        can see: The cat is on the
+
+mat        can see: The cat is on the mat
+```
+
+This is essential for next-token prediction.
+
+---
+
+# Part XVII — Why multiple attention heads?
+
+Instead of having one attention calculation, modern Transformers commonly use multiple attention heads.
+
+Think of them as parallel information-routing systems.
+
+One head might discover a pattern useful for syntax.
+
+Another might help with long-range references.
+
+Another could be useful for code structure.
+
+Another could contribute to mathematical relationships.
+
+You should **not** interpret every individual head as one clean human-understandable feature. Real neural representations are distributed and messy.
+
+The useful intuition is simply:
+
+```text
+many independent attention mechanisms
+        ↓
+different learned interaction patterns
+        ↓
+combined representation
+```
+
+---
+
+# Part XVIII — The feed-forward network
+
+Attention allows information to move between tokens.
+
+But the model also needs to transform that information.
+
+That is where the feed-forward or MLP part enters.
+
+Conceptually:
+
+```text
+current representation
+       ↓
+large linear transformation
+       ↓
+nonlinear function
+       ↓
+another linear transformation
+       ↓
+new representation
+```
+
+So the simplest mental decomposition is:
+
+```text
+attention
+= decide what information to gather
+
+MLP
+= transform the gathered information
+```
+
+This cycle repeats many times.
+
+---
+
+# Part XIX — Residual connections
+
+Suppose the current representation is:
+
+```text
+original information
+```
+
+and attention produces:
+
+```text
+new information
+```
+
+Instead of throwing away the original information, Transformer blocks use **residual connections**.
+
+Conceptually:
+
+```text
+old representation
+       +
+attention update
+       ↓
+new representation
+```
+
+and similarly:
+
+```text
+new representation
+       +
+MLP update
+       ↓
+next representation
+```
+
+This creates what is often called a **residual stream**.
+
+A useful intuition is:
+
+> The network keeps passing a running working representation forward while repeatedly writing useful updates into it.
+
+---
+
+# Part XX — Normalization
+
+Deep networks are much easier to train when their internal activations are controlled.
+
+Normalization layers transform activations into a more numerically manageable form.
+
+The exact normalization choice differs among architectures.
+
+The basic engineering purpose is:
+
+```text
+keep the signal numerically well-behaved
+        ↓
+make very deep networks trainable
+        ↓
+improve optimization stability
+```
+
+---
+
+# Part XXI — One complete Transformer block
+
+At this point our small language model roughly looks like:
+
+```text
+tokens
+  ↓
+token embeddings
+  ↓
+position information
+  ↓
+Transformer block
+  ├── normalization
+  ├── self-attention
+  ├── residual connection
+  ├── normalization
+  ├── MLP
+  └── residual connection
+  ↓
+next Transformer block
+  ↓
+next Transformer block
+  ↓
+...
+```
+
+The important part is that **the representation becomes more contextual as it passes through the layers**.
+
+Early layers may construct relatively local representations.
+
+Later layers can represent increasingly sophisticated combinations of information.
+
+Do not assume a strict clean hierarchy; modern neural networks do not partition knowledge into perfectly separated conceptual layers.
+
+---
+
+# Part XXII — The model finally has to make a prediction
+
+Suppose the input is:
+
+```text
+The capital of France is
+```
+
+The model processes the entire available context.
+
+At the final position, it has a large internal representation.
+
+Now we need to turn that representation into a score for every possible next token.
+
+Suppose the vocabulary contains 100,000 tokens.
+
+The model therefore produces roughly:
+
+```text
+100,000 scores
+```
+
+One score for every possible next token.
+
+These are called **logits**.
+
+For example:
+
+```text
+Paris       9.7
+London      4.2
+Berlin      3.9
+banana      0.8
+...
+```
+
+These numbers are not probabilities yet.
+
+---
+
+# Part XXIII — Softmax
+
+The model converts the logits into probabilities.
+
+Conceptually:
+
+```text
+logits
+   ↓
+softmax
+   ↓
+probability distribution
+```
+
+For example:
+
+```text
+Paris       0.91
+London      0.02
+Berlin      0.01
+banana      0.0001
+...
+```
+
+The probabilities add up to approximately 1.
+
+Now the model has answered:
+
+> Given everything so far, what should the next token probably be?
+
+---
+
+# Part XXIV — That is basically what a language model learns
+
+This is the core objective:
+
+```text
+Given previous tokens,
+predict the next token.
+```
+
+Example:
+
+```text
+The
+```
+
+predict:
+
+```text
+cat
+```
+
+Then:
+
+```text
+The cat
+```
+
+predict:
+
+```text
+sat
+```
+
+Then:
+
+```text
+The cat sat
+```
+
+predict:
+
+```text
+on
+```
+
+Then:
+
+```text
+The cat sat on
+```
+
+predict:
+
+```text
+the
+```
+
+Then:
+
+```text
+The cat sat on the
+```
+
+predict:
+
+```text
+mat
+```
+
+This looks simple.
+
+It becomes profound when the training data is enormous and the model is enormously capable.
+
+---
+
+# Part XXV — The training trick: we already know the answer
+
+Suppose our training sentence is:
+
+```text
+The cat sat on the mat.
+```
+
+We can construct many prediction tasks from it:
+
+```text
+Input:
+The
+
+Target:
+cat
+```
+
+Then:
+
+```text
+Input:
+The cat
+
+Target:
+sat
+```
+
+Then:
+
+```text
+Input:
+The cat sat
+
+Target:
+on
+```
+
+Then:
+
+```text
+Input:
+The cat sat on
+
+Target:
+the
+```
+
+and so forth.
+
+The training data therefore provides its own supervision.
+
+This is one reason language-model pretraining can operate at enormous scale.
+
+No human has to manually label every next word.
+
+---
+
+# Part XXVI — The loss
+
+Suppose the correct next token is:
+
+```text
+Paris
+```
+
+but the model assigns:
+
+```text
+Paris = 0.01
+```
+
+That is a bad prediction.
+
+The training system therefore computes a **loss**.
+
+Conceptually:
+
+```text
+high probability for correct answer
+        ↓
+small loss
+
+low probability for correct answer
+        ↓
+large loss
+```
+
+The loss is the single number that tells training:
+
+> “How badly did the model perform on this example?”
+
+---
+
+# Part XXVII — Backpropagation
+
+Now comes the learning mechanism.
+
+The model contains an enormous number of learned numbers called **parameters**.
+
+During one training step:
+
+```text
+input
+ ↓
+forward pass
+ ↓
+prediction
+ ↓
+loss
+```
+
+Then we go backward:
+
+```text
+loss
+ ↓
+backpropagation
+ ↓
+gradient for every parameter
+```
+
+The gradient tells us, approximately:
+
+> If this parameter changes slightly, does the loss go up or down, and by how much?
+
+This is just the chain rule applied automatically through the computation graph.
+
+---
+
+# Part XXVIII — The optimizer
+
+Now suppose a parameter should move slightly downward.
+
+The optimizer updates it.
+
+A simplified version of an update is:
+
+```text
+new parameter
+=
+old parameter
+-
+learning_rate × gradient
+```
+
+Modern frontier training generally uses substantially more sophisticated optimizer and scheduling systems than this toy expression suggests.
+
+But conceptually:
+
+```text
+prediction
+ ↓
+measure error
+ ↓
+calculate gradients
+ ↓
+change parameters
+ ↓
+try again
+```
+
+is the heart of neural-network learning.
+
+---
+
+# Part XXIX — The training loop
+
+A tiny training loop looks conceptually like this:
+
+```python
+while training:
+
+    batch = get_training_batch()
+
+    logits = model(batch.input)
+
+    loss = cross_entropy(
+        logits,
+        batch.target
+    )
+
+    loss.backward()
+
+    optimizer.step()
+
+    optimizer.zero_grad()
+```
+
+That tiny loop is one of the most important pieces of modern AI.
+
+The difference between this and a frontier model is largely the astonishing scale and engineering surrounding it.
+
+---
+
+# Part XXX — Why use batches?
+
+You don't normally train on one sentence at a time.
+
+Suppose:
+
+```text
+batch_size = 64
+```
+
+You process 64 training examples in parallel.
+
+Conceptually:
+
+```text
+example 1 ─┐
+example 2 ─┤
+example 3 ─┤
+...        ├──> GPU
+example 64 ┘
+```
+
+Modern accelerators are enormously good at performing the same tensor operations over many examples simultaneously.
+
+This is one of the key reasons GPUs/TPUs are so useful for deep learning.
+
+---
+
+# Part XXXI — Why GPUs?
+
+A Transformer performs huge numbers of operations resembling:
+
+```text
+matrix × matrix
+matrix × vector
+elementwise nonlinear operation
+```
+
+GPUs are designed to perform huge quantities of parallel numerical operations.
+
+Therefore:
+
+```text
+CPU
+=
+excellent general-purpose processor
+
+GPU / TPU
+=
+excellent massively parallel numerical engine
+```
+
+A frontier training run uses huge accelerator clusters.
+
+Google has publicly described training infrastructure spanning more than one million TPUs globally across its sites, while OpenAI has described extensive engineering work around GPU inference efficiency for GPT-5.6. [blog.google](https://blog.google/intl/en-in/company-news/technology/sundar-pichai-io-2026/?utm_source=chatgpt.com)
+
+---
+
+# Part XXXII — Why training a frontier model is difficult
+
+A toy model can fit on one GPU.
+
+A frontier model cannot simply be:
+
+```text
+load model
+→
+train on laptop
+```
+
+There are multiple bottlenecks.
+
+## Memory
+
+The model's parameters require memory.
+
+Then you also need memory for:
+
+```text
+activations
+gradients
+optimizer state
+temporary buffers
+```
+
+## Compute
+
+Every training step performs enormous numbers of operations.
+
+## Communication
+
+If the model spans many accelerators, those accelerators must exchange information.
+
+## Reliability
+
+A training run can last for a very long time.
+
+Hardware can fail.
+
+Networks can fail.
+
+Processes can crash.
+
+A robust training system must recover from failures.
+
+---
+
+# Part XXXIII — Distributed training
+
+Imagine one model is too large for one GPU.
+
+You can divide the computation among many GPUs.
+
+There are several major forms of parallelism.
+
+## Data parallelism
+
+Every GPU receives different training examples.
+
+```text
+GPU 1 → batch A
+GPU 2 → batch B
+GPU 3 → batch C
+GPU 4 → batch D
+```
+
+Each computes gradients.
+
+The gradients are combined.
+
+Then the model parameters are updated consistently.
+
+---
+
+# Part XXXIV — Tensor parallelism
+
+Suppose a matrix is too large for one GPU.
+
+You divide the matrix itself.
+
+```text
+large matrix
+   ↓
+GPU 1: part of matrix
+GPU 2: part of matrix
+GPU 3: part of matrix
+GPU 4: part of matrix
+```
+
+The GPUs cooperate to perform one larger operation.
+
+---
+
+# Part XXXV — Pipeline parallelism
+
+Another approach is to split layers.
+
+```text
+GPU 1 → layers near input
+GPU 2 → middle layers
+GPU 3 → later layers
+GPU 4 → output layers
+```
+
+Data flows through the stages.
+
+In practice, production systems combine different forms of parallelism rather than selecting exactly one.
+
+---
+
+# Part XXXVI — Mixed precision
+
+Neural networks often do not need every operation to use the highest numerical precision available.
+
+Modern training systems use lower-precision numerical formats where safe.
+
+That means:
+
+```text
+less memory
++
+faster arithmetic
++
+less communication
+```
+
+while maintaining model quality through careful numerical engineering.
+
+This is one of the reasons modern accelerator hardware is so important.
+
+---
+
+# Part XXXVII — Data packing
+
+There is another efficiency issue.
+
+Suppose you have:
+
+```text
+short sentence
+```
+
+and another:
+
+```text
+large document
+```
+
+Padding everything to the longest sequence wastes computation.
+
+Training systems therefore use sophisticated sequence packing strategies.
+
+Instead of:
+
+```text
+short example
+padding
+padding
+padding
+```
+
+they can pack many examples into a training sequence efficiently, while preserving boundaries.
+
+Again, this is ordinary engineering around the neural network.
+
+---
+
+# Part XXXVIII — Checkpoints
+
+Imagine training for 20 days and your cluster fails.
+
+Without checkpoints:
+
+```text
+20 days of work = lost
+```
+
+So periodically the system saves:
+
+```text
+model parameters
+optimizer state
+training position
+random-state information
+other metadata
+```
+
+A checkpoint allows training to resume.
+
+---
+
+# Part XXXIX — Pretraining is not enough
+
+After enormous amounts of next-token training, you have a powerful **base model**.
+
+But ask the model:
+
+> Explain calculus to a 16-year-old.
+
+A raw base model might simply continue text rather than behave like a helpful assistant.
+
+You therefore perform additional training.
+
+This is generally called **post-training**.
+
+---
+
+# Part XL — Supervised fine-tuning
+
+You create examples like:
+
+```text
+USER:
+Explain photosynthesis.
+
+ASSISTANT:
+Photosynthesis is the process by which...
+```
+
+Another:
+
+```text
+USER:
+Write Python code to reverse a linked list.
+
+ASSISTANT:
+def reverse(head):
+    ...
+```
+
+The model is trained on these desired interactions.
+
+Now it learns:
+
+```text
+question
+ ↓
+appropriate answer
+```
+
+rather than merely:
+
+```text
+arbitrary text
+ ↓
+continue text
+```
+
+This is one reason an instruction-tuned model feels dramatically different from a raw pretrained model.
+
+---
+
+# Part XLI — Preference training
+
+Suppose two answers are generated:
+
+```text
+Answer A
+Answer B
+```
+
+Humans or automated evaluation systems can compare them.
+
+Perhaps:
+
+```text
+Answer A = correct, clear, safe
+Answer B = incorrect, rambling
+```
+
+The system records a preference:
+
+```text
+A preferred over B
+```
+
+Training can then encourage the model toward responses humans prefer.
+
+Modern labs use combinations of supervised data, preference-based methods, reinforcement learning, synthetic data, evaluators, and specialized reward signals. The exact recipes differ and are proprietary.
+
+---
+
+# Part XLII — Why reinforcement learning becomes important
+
+Suppose the task is:
+
+> Solve this difficult mathematical problem.
+
+A simple supervised example says:
+
+```text
+question
+→
+correct answer
+```
+
+But for difficult reasoning tasks, there may be many possible intermediate strategies.
+
+You can instead allow the model to generate a solution attempt and evaluate the final result.
+
+For example:
+
+```text
+problem
+ ↓
+reason
+ ↓
+attempt
+ ↓
+answer
+ ↓
+correct?
+```
+
+If the answer is correct:
+
+```text
+reward = good
+```
+
+If the answer is wrong:
+
+```text
+reward = bad
+```
+
+Training then pushes the model toward strategies that tend to produce successful outcomes.
+
+OpenAI publicly describes reinforcement learning as part of the training of its reasoning models. [OpenAI Deployment Safety Hub](https://deploymentsafety.openai.com/gpt-5-6-preview?utm_source=chatgpt.com)
+
+---
+
+# Part XLIII — Reasoning models
+
+This is one of the largest conceptual changes in recent LLM development.
+
+A traditional language model can answer:
+
+```text
+question
+↓
+answer
+```
+
+A reasoning-oriented model may spend additional computation before giving the answer.
+
+Conceptually:
+
+```text
+question
+ ↓
+internal work
+ ↓
+checking
+ ↓
+revision
+ ↓
+answer
+```
+
+You should think of this as **inference-time computation**.
+
+The model does not necessarily become permanently smarter merely because you give it more time on one particular problem.
+
+Rather, the system is being allowed to perform more computation during that problem.
+
+OpenAI exposes configurable reasoning effort for GPT-5.6, and Anthropic's current Claude models use adaptive thinking in which the model dynamically determines whether and how much thinking to use; Google likewise exposes dynamic thinking levels for current Gemini models. [OpenAI Developers](https://developers.openai.com/api/docs/guides/latest-model?utm_source=chatgpt.com)
+
+---
+
+# Part XLIV — Why more thinking can help
+
+Consider:
+
+```text
+2 + 2
+```
+
+There is no reason to spend huge computation.
+
+But:
+
+```text
+Find the flaw in this 300-line proof.
+```
+
+may require:
+
+```text
+read
+→
+form hypothesis
+→
+inspect
+→
+test
+→
+find contradiction
+→
+re-check
+```
+
+Therefore frontier systems increasingly treat computation as something that can be allocated adaptively.
+
+Conceptually:
+
+```text
+easy task
+→
+small compute budget
+
+hard task
+→
+large compute budget
+```
+
+This is a major part of modern frontier reasoning.
+
+---
+
+# Part XLV — Context
+
+Now imagine you send ChatGPT:
+
+```text
+Here is a 100-page document.
+
+Question:
+Which theorem in Section 8 contradicts the theorem in Section 3?
+```
+
+The system needs all relevant information available during inference.
+
+This is the **context**.
+
+A context can contain:
+
+```text
+system instructions
+developer instructions
+previous conversation
+current user message
+uploaded files
+retrieved information
+tool results
+model-generated intermediate information
+```
+
+The Transformer processes the provided context.
+
+---
+
+# Part XLVI — Context window
+
+A model has a maximum amount of information it can process in one context.
+
+This is called the **context window**.
+
+For example, some current Gemini models expose a 1-million-token input context, and Claude Opus 4.8 exposes a 1-million-token context window in its documented offering. Exact limits vary by model and product. [Google AI for Developers](https://ai.google.dev/gemini-api/docs/models/gemini-3.6-flash?utm_source=chatgpt.com)
+
+The important point:
+
+```text
+context window
+≠
+model knowledge
+```
+
+A model may know something from training without it being present in the current context.
+
+---
+
+# Part XLVII — Training knowledge versus context
+
+Suppose the model was trained on a textbook.
+
+The textbook's information may have influenced its parameters.
+
+That does **not** mean the model has a literal copy of the textbook sitting in RAM during every conversation.
+
+Think of training as changing the model's internal parameters.
+
+Think of context as information temporarily supplied to the model during a particular task.
+
+So:
+
+```text
+learned parameters
+=
+long-term learned behavior
+
+context
+=
+current working information
+```
+
+---
+
+# Part XLVIII — Retrieval
+
+Now suppose you ask:
+
+> Search this 500-page company report and tell me revenue in 2019.
+
+Instead of forcing the model to read every page blindly, a system can retrieve relevant material.
+
+A typical pipeline:
+
+```text
+question
+ ↓
+search / retrieval
+ ↓
+relevant chunks
+ ↓
+model
+ ↓
+answer
+```
+
+This is commonly called **retrieval-augmented generation**.
+
+For example:
+
+```text
+Question:
+What was revenue in 2019?
+
+Retriever:
+find pages containing "2019", "revenue", related tables
+
+Retrieved text:
+...
+Revenue: $17.3 billion
+...
+
+Model:
+reads retrieved text
+ ↓
+answers user
+```
+
+Now the model is using an external information source.
+
+---
+
+# Part XLIX — Tool calling
+
+This is another major frontier transition.
+
+Suppose you ask:
+
+> What is 389,217 × 8,291?
+
+A language model *could* try to do it internally.
+
+But a better system can call a calculator.
+
+The model produces a structured action such as:
+
+```text
+calculator(
+    389217 * 8291
+)
+```
+
+Then an external tool computes the exact answer.
+
+The tool returns:
+
+```text
+322...
+```
+
+The model receives that result and continues.
+
+So:
+
+```text
+model
+ ↓
+tool call
+ ↓
+external program
+ ↓
+result
+ ↓
+model
+ ↓
+answer
+```
+
+The crucial distinction is:
+
+> **The neural network does not magically become a calculator. It can learn to invoke a calculator.**
+
+---
+
+# Part L — Tools can be almost anything
+
+Examples:
+
+```text
+web search
+calculator
+Python interpreter
+database
+browser
+filesystem
+terminal
+calendar
+email
+company API
+computer-control interface
+```
+
+A frontier AI system can therefore combine:
+
+```text
+learned reasoning
++
+deterministic software
+```
+
+This combination is much more powerful than either alone.
+
+---
+
+# Part LI — Coding agents
+
+Suppose you tell an AI:
+
+> Fix the bug in this Python project.
+
+A modern coding agent may do:
+
+```text
+1. inspect repository
+2. read relevant files
+3. identify likely bug
+4. edit code
+5. run tests
+6. observe failure
+7. revise code
+8. run tests again
+9. inspect results
+10. finalize patch
+```
+
+Notice that the model is no longer producing one answer.
+
+It is operating inside a loop.
+
+Conceptually:
+
+```text
+goal
+ ↓
+reason
+ ↓
+action
+ ↓
+environment
+ ↓
+observation
+ ↓
+reason
+ ↓
+action
+ ↓
+...
+```
+
+This is an **agentic system**.
+
+---
+
+# Part LII — The environment matters
+
+Imagine:
+
+```text
+LLM
+```
+
+alone.
+
+It can generate text.
+
+Now put it inside:
+
+```text
+LLM
++
+terminal
++
+filesystem
++
+browser
++
+Python
++
+git
+```
+
+The system can now perform actions.
+
+That difference is enormous.
+
+A model can say:
+
+> “I think the bug is in line 84.”
+
+An agent can instead:
+
+```text
+open line 84
+→
+edit line 84
+→
+run tests
+→
+observe failure
+→
+try another fix
+```
+
+The second system is materially more useful.
+
+---
+
+# Part LIII — Programmatic tool use
+
+At frontier scale, even tool orchestration becomes an optimization problem.
+
+Suppose an agent retrieves:
+
+```text
+500 documents
+```
+
+and wants to filter them.
+
+You do not necessarily want the language model to receive all 500 documents.
+
+A more efficient system can execute code externally:
+
+```text
+retrieve 500 filings
+ ↓
+programmatically filter
+ ↓
+keep 20 relevant filings
+ ↓
+send only those to model
+```
+
+OpenAI's GPT-5.6 documentation describes **programmatic tool calling** for precisely this class of workflow, where computation and data movement can happen outside the model's context while the model handles the judgment-intensive part. [OpenAI](https://openai.com/index/builders-guide-to-gpt-5-6/?trk=article-ssr-frontend-pulse_little-text-block\&utm_source=chatgpt.com)
+
+---
+
+# Part LIV — Multimodal AI
+
+Modern frontier models are no longer restricted to plain text.
+
+You can provide:
+
+```text
+text
+image
+PDF
+audio
+video
+```
+
+and the system can reason across modalities.
+
+But conceptually, the same principle remains:
+
+```text
+raw modality
+ ↓
+numerical representation
+ ↓
+shared or coordinated model representation
+ ↓
+reasoning
+```
+
+---
+
+# Part LV — Image input
+
+Consider:
+
+```text
+[photograph of a geometry problem]
+```
+
+The system has to turn the visual information into a representation the model can process.
+
+A conceptual pipeline is:
+
+```text
+pixels
+ ↓
+vision processing
+ ↓
+visual representation
+ ↓
+combined with language/context
+ ↓
+reasoning
+ ↓
+answer
+```
+
+The exact multimodal architecture differs from model to model and is generally proprietary for current frontier products.
+
+---
+
+# Part LVI — Audio
+
+For speech:
+
+```text
+microphone
+ ↓
+audio waveform
+ ↓
+audio processing
+ ↓
+speech / audio representation
+ ↓
+language reasoning
+ ↓
+text or speech response
+```
+
+Current Gemini systems, for example, expose text, image, video, and audio inputs on supported models, while Claude supports text and image inputs and GPT products expose multimodal capabilities through their respective systems. [Google AI for Developers](https://ai.google.dev/gemini-api/docs/models/gemini-3.6-flash?utm_source=chatgpt.com)
+
+---
+
+# Part LVII — Video
+
+Video introduces an additional dimension:
+
+```text
+frame 1
+frame 2
+frame 3
+...
+frame N
+```
+
+The model must understand both:
+
+```text
+what exists
+```
+
+and:
+
+```text
+what changes over time
+```
+
+This is much more expensive than processing a short sentence.
+
+Google's current Gemini family explicitly includes models designed for long-context multimodal and agentic tasks, and its Gemini Omni family extends the multimodal stack toward video generation and editing. [Google AI for Developers](https://ai.google.dev/gemini-api/docs/models?hl=en\&utm_source=chatgpt.com)
+
+---
+
+# Part LVIII — Text generation is still token generation
+
+Even when the system seems to “write an essay,” the underlying autoregressive principle remains:
+
+```text
+context
+ ↓
+predict next token
+ ↓
+append token
+ ↓
+predict next token
+ ↓
+append token
+ ↓
+...
+```
+
+For a 1,000-token answer:
+
+```text
+model call
+→ token 1
+→ token 2
+→ token 3
+→ ...
+→ token 1000
+```
+
+There are important optimizations, but that basic conceptual loop remains useful.
+
+---
+
+# Part LIX — KV cache
+
+Suppose the model already processed:
+
+```text
+The cat is sitting on the mat because
+```
+
+Then it needs to generate:
+
+```text
+it
+```
+
+and afterward:
+
+```text
+was
+```
+
+It would be wasteful to completely recompute all attention information from scratch at every generated token.
+
+So inference systems use a **key-value cache**, commonly called the **KV cache**.
+
+Conceptually:
+
+```text
+already processed attention information
+              ↓
+            cache
+              ↓
+reuse during next token
+```
+
+This is a major inference optimization.
+
+---
+
+# Part LX — Prompt caching
+
+Now imagine an agent repeatedly sends the same giant system instructions and tool definitions.
+
+Doing all of that computation repeatedly is expensive.
+
+A serving system can cache reusable computation from the shared prefix.
+
+OpenAI describes prompt caching as a major efficiency mechanism for long agentic workflows, especially when a sequence of model calls repeatedly shares the same context prefix. [OpenAI](https://openai.com/index/gpt-5-6-frontier-intelligence-efficiency/?utm_source=chatgpt.com)
+
+So there are several different things called “cache” in the wider system:
+
+```text
+KV cache
+=
+reuse attention state during generation
+
+prompt cache
+=
+reuse computation for repeated context prefixes
+```
+
+Do not confuse them.
+
+---
+
+# Part LXI — Speculative decoding
+
+Another inference optimization is **speculative decoding**.
+
+Imagine:
+
+```text
+small fast model
+```
+
+can propose:
+
+```text
+A B C D E
+```
+
+quickly.
+
+Then:
+
+```text
+large slow model
+```
+
+checks those proposed tokens.
+
+If they are acceptable:
+
+```text
+accept many tokens at once
+```
+
+instead of having the large model generate every token independently.
+
+This can reduce latency.
+
+OpenAI explicitly cites speculative decoding among the inference optimizations used around GPT-5.6. [OpenAI](https://openai.com/index/gpt-5-6-frontier-intelligence-efficiency/?utm_source=chatgpt.com)
+
+---
+
+# Part LXII — Continuous batching
+
+Imagine 10,000 users are simultaneously requesting responses.
+
+You do not necessarily want:
+
+```text
+request 1
+finish completely
+
+request 2
+finish completely
+
+request 3
+finish completely
+```
+
+Instead, the inference system dynamically batches work so hardware stays highly utilized.
+
+Conceptually:
+
+```text
+request A ─┐
+request B ─┤
+request C ─┼──> accelerator
+request D ─┤
+request E ─┘
+```
+
+As requests finish, new requests can enter.
+
+This is a major serving-engineering problem.
+
+---
+
+# Part LXIII — Load balancing
+
+Imagine:
+
+```text
+1000 GPUs
+```
+
+and millions of incoming requests.
+
+The service has to decide:
+
+```text
+which machine
+which model replica
+which worker
+which queue
+```
+
+should handle each request.
+
+This is ordinary distributed-systems engineering wrapped around a neural network.
+
+---
+
+# Part LXIV — Model routing
+
+A frontier product does not necessarily use exactly one model for every request.
+
+A system can route different requests differently.
+
+For example:
+
+```text
+simple task
+→
+fast model
+
+hard reasoning
+→
+reasoning model
+
+image generation
+→
+image model
+
+speech
+→
+speech model
+
+coding agent
+→
+coding-capable model + tools
+```
+
+OpenAI publicly described a GPT-5 system with routing between faster and deeper reasoning models, while its newer GPT-5.6 family also offers multiple models with different intelligence/cost characteristics. [OpenAI](https://openai.com/index/gpt-5-system-card/?utm_source=chatgpt.com)
+
+This is why:
+
+> **“ChatGPT” is not necessarily synonymous with one neural network.**
+
+ChatGPT is a **product/system**.
+
+---
+
+# Part LXV — Mixture of Experts
+
+Another architecture worth understanding is **Mixture of Experts**, or MoE.
+
+Imagine a model has many specialist subnetworks:
+
+```text
+Expert A
+Expert B
+Expert C
+Expert D
+...
+```
+
+A router examines the current input and decides which experts should process it.
+
+Conceptually:
+
+```text
+token
+ ↓
+router
+ ↓
+choose expert(s)
+ ↓
+expert computation
+ ↓
+combine result
+```
+
+Why do this?
+
+Because you can have a very large total parameter pool while activating only part of it for each input.
+
+This can improve the compute/parameter tradeoff.
+
+However:
+
+> Do **not** assume that a specific current GPT, Claude, or Gemini model uses a particular MoE configuration unless its developer has disclosed it.
+
+Current frontier architectures are proprietary.
+
+---
+
+# Part LXVI — Synthetic data
+
+There is another major frontier training technique.
+
+Suppose you already have a strong model.
+
+You can ask it to generate:
+
+```text
+questions
+solutions
+code
+reasoning traces
+critiques
+counterexamples
+```
+
+Then use high-quality examples for training.
+
+Conceptually:
+
+```text
+strong model
+ ↓
+generate useful training examples
+ ↓
+filter / verify
+ ↓
+train another model
+```
+
+This can greatly expand specialized training data.
+
+Anthropic publicly reports using synthetic data in Claude Opus 5.5's training mixture. [Anthropic](https://www.anthropic.com/transparency?utm_source=chatgpt.com)
+
+---
+
+# Part LXVII — Verification
+
+Synthetic data is dangerous if the generated material is wrong.
+
+Therefore frontier systems increasingly use **verifiers**.
+
+For example:
+
+```text
+model generates mathematical solution
+             ↓
+       symbolic checker
+             ↓
+         correct?
+        /       \
+      yes       no
+       ↓         ↓
+   keep it     reject it
+```
+
+For code:
+
+```text
+generated program
+ ↓
+compiler
+ ↓
+unit tests
+ ↓
+security checks
+ ↓
+accept / reject
+```
+
+This converts some difficult subjective training problems into more objective engineering loops.
+
+---
+
+# Part LXVIII — Why coding became so important
+
+Code gives an unusually useful property:
+
+```text
+the environment can execute it.
+```
+
+Suppose the model writes:
+
+```python
+def add(a, b):
+    return a - b
+```
+
+A test immediately reveals:
+
+```text
+FAIL
+```
+
+The model can then revise it.
+
+This creates a powerful loop:
+
+```text
+generate
+→
+execute
+→
+observe
+→
+correct
+```
+
+That is one reason coding agents have become a major frontier capability.
+
+OpenAI and Anthropic both publicly emphasize long-horizon coding and agent workflows in their current frontier releases. [OpenAI](https://openai.com/index/gpt-5-6/?utm_source=chatgpt.com)
+
+---
+
+# Part LXIX — The agent harness
+
+Now we're getting close to what current frontier products actually are.
+
+Suppose the model can call:
+
+```text
+browser
+terminal
+filesystem
+Python
+search
+database
+```
+
+Something has to manage those tools.
+
+That layer is sometimes called an:
+
+```text
+agent harness
+```
+
+It can manage:
+
+```text
+tool definitions
+permissions
+tool calls
+tool results
+context
+retries
+parallel execution
+state
+timeouts
+approvals
+caching
+logging
+```
+
+OpenAI has publicly described an agentic harness around GPT-5.6-based systems that connects models to tools and user environments, including context management and repeated tool-call workflows. [OpenAI](https://openai.com/index/gpt-5-6-frontier-intelligence-efficiency/?utm_source=chatgpt.com)
+
+Anthropic similarly describes dynamic workflows for Claude Code, including parallel subagents and long-running task execution. [Anthropic](https://www.anthropic.com/news/claude-opus-4-8?_bhlid=f890d20a67bfbf67cf93a97424c19036128f08d8\&utm_source=chatgpt.com)
+
+---
+
+# Part LXX — Multi-agent systems
+
+Suppose the user asks:
+
+> Research this topic and produce a report.
+
+Instead of using one model call, a system could conceptually create:
+
+```text
+research agent
+      ↓
+find sources
+
+analysis agent
+      ↓
+compare evidence
+
+coding agent
+      ↓
+perform calculations
+
+critic agent
+      ↓
+find errors
+
+writer agent
+      ↓
+produce final report
+```
+
+Then:
+
+```text
+synthesis
+```
+
+combines the results.
+
+This is still fundamentally model inference plus orchestration.
+
+Claude Opus 5.5's public product description emphasizes complex multi-tool tasks, memory, and subagent coordination; Anthropic also describes dynamic workflows in Claude Code. [Anthropic](https://www.anthropic.com/claude/opus?utm_source=chatgpt.com)
+
+---
+
+# Part LXXI — Safety is not one filter
+
+A serious AI system needs multiple safety mechanisms.
+
+Think of the stack:
+
+```text
+training-data filtering
+        ↓
+post-training
+        ↓
+model behavior
+        ↓
+input/output classifiers
+        ↓
+tool permissions
+        ↓
+monitoring
+        ↓
+abuse detection
+        ↓
+deployment controls
+```
+
+A model can therefore be both:
+
+```text
+trained to behave safely
+```
+
+and
+
+```text
+restricted by external software.
+```
+
+These are different mechanisms.
+
+---
+
+# Part LXXII — Evaluation
+
+Before deployment, companies test models.
+
+Not merely:
+
+```text
+Can it answer questions?
+```
+
+but things like:
+
+```text
+coding
+mathematics
+science
+reasoning
+knowledge
+tool use
+browsing
+computer use
+cybersecurity
+long-context retrieval
+hallucination
+safety
+instruction following
+autonomy
+```
+
+You can think of the process as:
+
+```text
+new model
+ ↓
+evaluation suite
+ ↓
+find weaknesses
+ ↓
+modify training/system
+ ↓
+evaluate again
+```
+
+That becomes a loop.
+
+---
+
+# Part LXXIII — Frontier AI is an optimization loop around another optimization loop
+
+This is an important conceptual compression.
+
+Inside the model:
+
+```text
+training
+→
+loss
+→
+gradient
+→
+parameter update
+```
+
+Around the model:
+
+```text
+evaluation
+→
+find weakness
+→
+change data
+→
+change post-training
+→
+change architecture
+→
+change inference
+→
+evaluate again
+```
+
+And around the whole system:
+
+```text
+user feedback
+→
+deployment measurements
+→
+engineering improvements
+→
+new model
+→
+new deployment
+```
+
+So frontier AI is not one algorithm.
+
+It is a **stack of optimization processes**.
+
+---
+
+# Part LXXIV — What “training a large language model” actually means
+
+When someone says:
+
+> “We trained a model.”
+
+that sentence hides an enormous pipeline.
+
+A simplified version is:
+
+```text
+1. collect data
+2. clean data
+3. deduplicate data
+4. classify/filter data
+5. build tokenizer
+6. tokenize corpus
+7. pack sequences
+8. initialize model
+9. distribute model across accelerators
+10. run forward pass
+11. calculate loss
+12. backpropagate
+13. update parameters
+14. save checkpoints
+15. evaluate
+16. adjust training
+17. continue
+18. finish pretraining
+19. perform post-training
+20. perform reasoning training
+21. safety training
+22. benchmark
+23. deploy
+```
+
+That is already much closer to reality.
+
+---
+
+# Part LXXV — What turns the base model into ChatGPT?
+
+This is the crucial distinction:
+
+```text
+base model
+```
+
+is not equivalent to:
+
+```text
+ChatGPT
+```
+
+A useful conceptual decomposition is:
+
+```text
+                CHATGPT-LIKE SYSTEM
+                        │
+        ┌───────────────┼────────────────┐
+        │               │                │
+     MODEL          POST-TRAINING      TOOLS
+        │               │                │
+        └───────────────┼────────────────┘
+                        │
+                    CONTEXT
+                        │
+                        ▼
+                   ORCHESTRATOR
+                        │
+                        ▼
+                   FINAL OUTPUT
+```
+
+The model is the central computational engine.
+
+But the product adds everything around it.
+
+---
+
+# Part LXXVI — Claude is the same kind of general stack
+
+Current Claude systems follow the same broad pattern:
+
+```text
+large pretrained model
+        ↓
+post-training
+        ↓
+reasoning / adaptive thinking
+        ↓
+context
+        ↓
+tool use
+        ↓
+agent loops
+        ↓
+Claude product
+```
+
+Anthropic says Claude Opus 5.5 was pretrained on large, diverse datasets and then underwent substantial post-training intended to align behavior with Claude's constitution. Anthropic also describes adaptive thinking on current Claude generations, where effort and task complexity influence how much internal computation is used. [Anthropic](https://www.anthropic.com/transparency?utm_source=chatgpt.com)
+
+---
+
+# Part LXXVII — Gemini is also the same broad paradigm
+
+Gemini's product stack adds particularly broad multimodality and increasingly agentic behavior.
+
+Current Google documentation lists Gemini models supporting combinations of:
+
+```text
+text
+image
+video
+audio
+PDF
+tools
+code execution
+search grounding
+computer use
+thinking
+```
+
+depending on the model. Google's current API documentation lists Gemini 3.8 Flash as a stable model for long-horizon software engineering and agents, while Gemini's thinking documentation describes dynamic allocation of reasoning effort. [Google AI for Developers](https://ai.google.dev/gemini-api/docs/models/gemini-3.6-flash?utm_source=chatgpt.com)
+
+Google has also been explicitly pushing Gemini toward agentic workflows rather than just question answering. [blog.google](https://blog.google/innovation-and-ai/models-and-research/gemini-models/gemini-3-5/?utm_source=chatgpt.com)
+
+---
+
+# Part LXXVIII — So what is actually different between GPT, Claude and Gemini?
+
+At the conceptual level, much less than their product differences suggest.
+
+They all operate broadly around:
+
+```text
+learn representations
+        ↓
+large neural network
+        ↓
+predict / reason
+        ↓
+post-training
+        ↓
+tools
+        ↓
+agentic orchestration
+```
+
+The major differences can occur in:
+
+```text
+architecture
+training data
+data mixture
+tokenizer
+model scale
+reasoning training
+post-training recipe
+alignment method
+multimodality
+tool ecosystem
+inference infrastructure
+product orchestration
+```
+
+And many of the most important implementation details are proprietary.
+
+---
+
+# Part LXXIX — A subtle but important point about “AI reasoning”
+
+When you ask:
+
+> “How does GPT reason?”
+
+there are actually several different answers.
+
+### Inside the pretrained network
+
+The model has learned reusable computational patterns.
+
+### During post-training
+
+The model has been shaped toward successful behavior.
+
+### During inference
+
+The model may spend additional computation on a difficult problem.
+
+### During tool use
+
+It may call external computational systems.
+
+### During agentic execution
+
+It may perform:
+
+```text
+plan
+→ act
+→ observe
+→ revise
+```
+
+Therefore:
+
+> **“Reasoning” in a frontier product is a system-level phenomenon, not necessarily a single algorithmic component.**
+
+---
+
+# Part LXXX — The difference between knowledge and computation
+
+Suppose I ask:
+
+> What is the derivative of x²?
+
+The model may answer from learned knowledge.
+
+But suppose I ask:
+
+> Factor this enormous polynomial.
+
+A strong system may combine:
+
+```text
+learned mathematical knowledge
++
+internal reasoning
++
+Python / symbolic tools
++
+verification
+```
+
+That is much more reliable than expecting the neural network alone to perform every operation exactly.
+
+This is one of the deepest engineering ideas in modern AI:
+
+\[
+\boxed{\text{learned intelligence}+\text{deterministic computation}}
+\]
+
+is often stronger than either one alone.
+
+---
+
+# Part LXXXI — The complete frontier architecture
+
+Now we can draw the whole thing.
+
+```text
+                         USER
+                          │
+                          ▼
+                    USER INTERFACE
+                          │
+                          ▼
+                 REQUEST / CONTEXT BUILDER
+                          │
+          ┌───────────────┼────────────────┐
+          │               │                │
+          ▼               ▼                ▼
+      messages          files            images
+          │               │                │
+          └───────────────┼────────────────┘
+                          ▼
+                  CONTEXT / ORCHESTRATOR
+                          │
+                          ▼
+                 MODEL ROUTER / POLICY
+                          │
+                          ▼
+                 FRONTIER MODEL
+                          │
+          ┌───────────────┼─────────────────┐
+          │               │                 │
+          ▼               ▼                 ▼
+      attention          MLPs           other model
+          │               │             components
+          └───────────────┼─────────────────┘
+                          ▼
+                   internal reasoning
+                          │
+             ┌────────────┴────────────┐
+             │                         │
+             ▼                         ▼
+        final answer              tool request
+                                       │
+                                       ▼
+                               TOOL EXECUTION
+                                       │
+             ┌─────────────┬───────────┼────────────┐
+             ▼             ▼           ▼            ▼
+           web           Python      files       browser
+             │             │           │            │
+             └─────────────┴───────────┼────────────┘
+                                       ▼
+                                   tool result
+                                       │
+                                       ▼
+                                  MODEL AGAIN
+                                       │
+                                       ▼
+                                  verification
+                                       │
+                                       ▼
+                                   final answer
+```
+
+That is much closer to what you should imagine when you hear:
+
+> “ChatGPT answered my question.”
+
+---
+
+# Part LXXXII — Now let's follow one real example completely
+
+Suppose you tell a frontier AI:
+
+> **“Read this PDF containing a calculus problem, solve it, verify the result with Python, and explain the solution.”**
+
+Let's trace the entire system.
+
+---
+
+## Step 1 — You upload the PDF
+
+Your computer sends:
+
+```text
+PDF bytes
+```
+
+to the service.
+
+---
+
+## Step 2 — The system identifies the document
+
+The system determines:
+
+```text
+file type = PDF
+```
+
+and sends it through the appropriate document-processing pipeline.
+
+---
+
+## Step 3 — The PDF is parsed
+
+Suppose the PDF contains:
+
+> Find the derivative of \(x^3+4x^2-7x\).
+
+The system extracts the content.
+
+Depending on the model/product, visual information may also be preserved.
+
+---
+
+## Step 4 — The user request and document become context
+
+The system now has conceptually:
+
+```text
+User:
+Read this PDF...
+```
+
+plus:
+
+```text
+Document:
+Find the derivative of x³ + 4x² - 7x.
+```
+
+---
+
+## Step 5 — Content becomes model-readable representation
+
+The text is tokenized.
+
+For illustration:
+
+```text
+"Find"
+" the"
+" derivative"
+" of"
+" x"
+"³"
+"+"
+"4"
+"x"
+"²"
+...
+```
+
+These become token IDs.
+
+The token IDs are converted into vectors.
+
+---
+
+## Step 6 — The Transformer processes them
+
+The embeddings and positional information enter the Transformer.
+
+Each layer repeatedly performs:
+
+```text
+attention
++
+nonlinear transformation
++
+residual updates
+```
+
+The representation becomes increasingly contextual.
+
+---
+
+## Step 7 — The model reasons
+
+The model determines something like:
+
+```text
+Derivative of x³ = 3x²
+Derivative of 4x² = 8x
+Derivative of -7x = -7
+```
+
+Conceptually:
+
+```text
+understand problem
+→
+identify terms
+→
+apply differentiation rule
+→
+combine results
+```
+
+The actual internal computation is neural and much more complicated than this verbal description.
+
+---
+
+## Step 8 — The model decides Python would be useful
+
+The frontier system may have access to a Python tool.
+
+It emits something like:
+
+```text
+python(
+    differentiate("x**3 + 4*x**2 - 7*x")
+)
+```
+
+---
+
+## Step 9 — Python executes
+
+The external Python environment computes the result.
+
+For example:
+
+```text
+3*x**2 + 8*x - 7
+```
+
+---
+
+## Step 10 — The tool result returns
+
+The model receives:
+
+```text
+Tool result:
+3*x² + 8x - 7
+```
+
+---
+
+## Step 11 — The model compares its own solution with the tool result
+
+Suppose its internal result was:
+
+```text
+3x² + 8x - 7
+```
+
+They match.
+
+The system now has additional evidence that the answer is correct.
+
+---
+
+## Step 12 — The model generates the answer
+
+It now predicts the response token by token:
+
+```text
+The
+derivative
+of
+...
+```
+
+Each next token is generated from the current context.
+
+---
+
+## Step 13 — The answer reaches you
+
+The final product you see is:
+
+> The derivative is \(3x^2+8x-7\).
+
+But behind that single sentence there may have been:
+
+```text
+file processing
+tokenization
+embedding
+Transformer computation
+reasoning
+tool call
+Python execution
+verification
+generation
+serving infrastructure
+```
+
+This is the key idea.
+
+---
+
+# Part LXXXIII — One gigantic conceptual compression
+
+You can compress the entire subject into **four nested systems**.
+
+## Level 1 — The neural network
+
+```text
+tokens
+ ↓
+embeddings
+ ↓
+Transformer
+ ↓
+probabilities
+```
+
+## Level 2 — Training the network
+
+```text
+data
+ ↓
+prediction
+ ↓
+loss
+ ↓
+gradient
+ ↓
+parameter update
+ ↓
+repeat
+```
+
+## Level 3 — Turning the network into an assistant
+
+```text
+base model
+ ↓
+instruction tuning
+ ↓
+preference training
+ ↓
+reasoning training
+ ↓
+safety training
+```
+
+## Level 4 — Turning the assistant into a frontier product
+
+```text
+assistant model
+ ↓
+context management
+ ↓
+retrieval
+ ↓
+tools
+ ↓
+reasoning loops
+ ↓
+agents
+ ↓
+computer use
+ ↓
+distributed inference
+ ↓
+monitoring / safety
+ ↓
+product
+```
+
+---
+
+# Part LXXXIV — Where your previous explanation fits
+
+You originally said:
+
+```text
+sentence
+→
+words/subwords
+→
+integers
+→
+mathematical operations
+```
+
+That was the beginning.
+
+The complete corrected chain is:
+
+```text
+raw data
+   ↓
+parsing
+   ↓
+cleaning
+   ↓
+filtering
+   ↓
+tokenization
+   ↓
+token IDs
+   ↓
+embeddings
+   ↓
+positional information
+   ↓
+Transformer blocks
+   ↓
+attention
+   ↓
+MLPs
+   ↓
+residual stream
+   ↓
+output logits
+   ↓
+probabilities
+   ↓
+next-token selection
+   ↓
+generated tokens
+```
+
+Then training adds:
+
+```text
+prediction
+   ↓
+loss
+   ↓
+backpropagation
+   ↓
+gradients
+   ↓
+optimizer
+   ↓
+updated parameters
+```
+
+Then frontier systems add:
+
+```text
+post-training
+   ↓
+reasoning
+   ↓
+retrieval
+   ↓
+tools
+   ↓
+agents
+   ↓
+multimodality
+   ↓
+verification
+   ↓
+distributed serving
+```
+
+That is the entire ladder.
+
+---
+
+# Part LXXXV — What you should imagine GPT/Claude/Gemini to be
+
+Do **not** imagine:
+
+```text
+a giant conscious brain
+```
+
+Do not imagine:
+
+```text
+a database containing every answer
+```
+
+Do not imagine:
+
+```text
+one enormous program written by programmers
+```
+
+A much better mental model is:
+
+> **A huge learned numerical function that has been trained to perform useful computation over representations of the world, placed inside an engineered system that supplies context, tools, memory, verification, safety, and compute.**
+
+And for a difficult task:
+
+```text
+learned model
++
+more inference computation
++
+external software
++
+feedback
++
+iteration
+```
+
+is what produces the capabilities you experience.
+
+---
+
+# Part LXXXVI — What is known versus what is secret
+
+This distinction is essential if you want to understand frontier AI at research level.
+
+## Well established
+
+We understand the basic mechanisms:
+
+```text
+tokenization
+embeddings
+Transformers
+attention
+MLPs
+gradient descent
+backpropagation
+language-model loss
+autoregressive generation
+RL / preference training
+tool calling
+retrieval
+distributed inference
+```
+
+## Publicly described but implementation-dependent
+
+We know that current frontier systems use things such as:
+
+```text
+reasoning
+multimodality
+tool use
+long context
+agentic workflows
+caching
+distributed serving
+```
+
+OpenAI, Anthropic, and Google explicitly document many of these capabilities. [OpenAI](https://openai.com/index/gpt-5-6/?utm_source=chatgpt.com)
+
+## Usually proprietary
+
+We generally do **not** know the complete exact specifications for current frontier models, such as:
+
+```text
+exact parameter count
+exact layer count
+exact attention architecture
+exact hidden dimensions
+exact expert count
+exact training token mixture
+exact optimizer configuration
+exact learning-rate schedule
+exact data filtering thresholds
+exact reward construction
+exact RL algorithm mix
+exact inference architecture
+```
+
+Therefore it is scientifically incorrect to invent those details.
+
+---
+
+# Part LXXXVII — Current frontier examples
+
+As of October 2026:
+
+### OpenAI
+
+The GPT-5.6 family includes:
+
+```text
+GPT-5.6 Sol
+GPT-5.6 Terra
+GPT-5.6 Luna
+```
+
+with different intelligence/cost/latency tradeoffs. OpenAI documents configurable reasoning effort, tool use, agentic workflows, prompt caching, speculative decoding and other serving optimizations around these systems. [OpenAI](https://openai.com/index/gpt-5-6/?utm_source=chatgpt.com)
+
+### Anthropic
+
+Anthropic's current public Claude 5.5 family includes:
+
+```text
+Claude Opus 5.5
+Claude Sonnet 5.5
+```
+
+with Opus 5.5 presented as its leading general-release model and designed for coding, agentic work and knowledge work. Anthropic also describes adaptive thinking, tool use, long-running workflows and subagent orchestration. [Anthropic](https://www.anthropic.com/claude-opus-5-5?campaign=19995287\&trk=public_post_comment-text\&utm_source=chatgpt.com)
+
+### Google
+
+Google's Gemini API currently lists the Gemini 3.x family, including Gemini 3.8 Flash, with multimodal inputs, thinking, tool use and agentic capabilities depending on model. Google's current documentation also exposes configurable thinking levels. [Google AI for Developers](https://ai.google.dev/gemini-api/docs/models?hl=en\&utm_source=chatgpt.com)
+
+The names will continue to change.
+
+The **underlying engineering concepts** are much more durable.
+
+---
+
+# Part LXXXVIII — The most important mental model
+
+When you look at a frontier AI product, mentally peel it apart in this order:
+
+```text
+                 FRONTIER AI PRODUCT
+                         │
+                         ▼
+                    APPLICATION
+                         │
+                         ▼
+                  AGENT / HARNESS
+                         │
+                         ▼
+              CONTEXT + TOOLS + MEMORY
+                         │
+                         ▼
+                 REASONING MODEL
+                         │
+                         ▼
+              POST-TRAINED FOUNDATION
+                         │
+                         ▼
+                  PRETRAINED MODEL
+                         │
+                         ▼
+                    TRANSFORMER
+                         │
+                         ▼
+                     VECTORS
+                         │
+                         ▼
+                    TOKEN IDs
+                         │
+                         ▼
+                      TOKENS
+                         │
+                         ▼
+                     RAW DATA
+```
+
+And the reverse direction explains training:
+
+```text
+RAW DATA
+   ↓
+TOKENS
+   ↓
+MODEL PREDICTION
+   ↓
+LOSS
+   ↓
+GRADIENT
+   ↓
+PARAMETER UPDATE
+   ↓
+REPEAT BILLIONS OF TIMES
+   ↓
+FOUNDATION MODEL
+   ↓
+POST-TRAINING
+   ↓
+REASONING / SAFETY / TOOL TRAINING
+   ↓
+FRONTIER SYSTEM
+```
+
+That is the conceptual architecture you should now keep in your head.
+
+---
+
+## The next layer of depth
+
+To go from **“I understand what each component does”** to **“I can build an LLM myself”**, the natural sequence is:
+
+```text
+1. Tokenizer
+2. Embedding table
+3. Positional representation
+4. Single attention head
+5. Multi-head attention
+6. Causal masking
+7. MLP
+8. Residual connections
+9. Normalization
+10. Complete Transformer block
+11. GPT language-model head
+12. Cross-entropy loss
+13. Backpropagation
+14. Adam/AdamW
+15. Mini-batch training
+16. Dataset packing
+17. GPU training
+18. checkpointing
+19. instruction tuning
+20. preference / RL training
+21. inference-time reasoning
+22. KV cache
+23. batching and serving
+24. tool calling
+25. RAG
+26. agent loops
+27. multimodality
+28. distributed frontier training
+```
